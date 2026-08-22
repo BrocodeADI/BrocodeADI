@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .config import THEMES, Config, load_config
+from .generate_about import generate_about_svg, generate_projects_svg, generate_section_headers
 from .generate_headings import generate_all_headings
 from .generate_languages import generate_languages_svg
 from .generate_portrait import generate_portrait_svg
@@ -155,9 +156,17 @@ def run_pipeline(config: Config) -> Dict[str, Path]:
     generated_files["year"] = year_target
 
     # 5. Generate Section Typography Headings
-    logger.info("Phase 5/5: Generating custom SVG typography section banners...")
+    logger.info("Phase 5/6: Generating custom SVG typography section banners...")
     generate_all_headings(config=config, output_dir=config.headings_dir)
+    generate_section_headers(config=config, output_dir=config.output_dir)
     generated_files["headings"] = config.headings_dir
+
+    # 6. Generate About + Projects sections
+    logger.info("Phase 6/6: Generating about.svg and projects.svg...")
+    generate_about_svg(user_data=user_data, config=config,
+                       output_path=config.output_dir / "about.svg")
+    generate_projects_svg(user_data=user_data, config=config,
+                          output_path=config.output_dir / "projects.svg")
 
     logger.info("==================================================")
     logger.info("  PIPELINE COMPLETE: All visual assets up to date ")

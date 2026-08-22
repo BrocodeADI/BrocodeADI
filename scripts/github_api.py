@@ -73,6 +73,26 @@ query($login: String!, $from: DateTime!, $to: DateTime!) {
         }
       }
     }
+    pinnedItems(first: 6, types: [REPOSITORY]) {
+      nodes {
+        ... on Repository {
+          name
+          description
+          stargazerCount
+          forkCount
+          primaryLanguage { name color }
+          url
+        }
+      }
+    }
+    organizations(first: 10) {
+      nodes {
+        name
+        login
+        avatarUrl
+        url
+      }
+    }
   }
 }
 """
@@ -112,6 +132,23 @@ class LanguageStat:
 
 
 @dataclass
+class PinnedRepo:
+    name: str
+    description: str
+    stars: int
+    forks: int
+    language: str
+    url: str
+
+
+@dataclass
+class OrgInfo:
+    name: str
+    login: str
+    url: str
+
+
+@dataclass
 class GitHubUserData:
     username: str
     name: str
@@ -130,6 +167,8 @@ class GitHubUserData:
     languages: List[LanguageStat]
     from_date: str
     to_date: str
+    pinned_repos: List[PinnedRepo] = field(default_factory=list)
+    organizations: List[OrgInfo] = field(default_factory=list)
 
 
 def get_deterministic_utc_window(days: int = 365) -> Tuple[datetime.datetime, datetime.datetime]:
@@ -497,7 +536,32 @@ class GitHubAPIClient:
         total_forks = sum(r.get("forkCount", 0) for r in repo_nodes)
         
         languages = aggregate_languages(repo_nodes)
-        
+
+        # Parse pinned repos
+        pinned_nodes = user_dict.get("pinnedItems", {}).get("nodes", [])
+        pinned_repos = [
+            PinnedRepo(
+                name=r.get("name", ""),
+                description=r.get("description") or "",
+                stars=r.get("stargazerCount", 0),
+                forks=r.get("forkCount", 0),
+                language=(r.get("primaryLanguage") or {}).get("name", ""),
+                url=r.get("url", "")
+            )
+            for r in pinned_nodes
+        ]
+
+        # Parse organizations
+        org_nodes = user_dict.get("organizations", {}).get("nodes", [])
+        organizations = [
+            OrgInfo(
+                name=o.get("name") or o.get("login", ""),
+                login=o.get("login", ""),
+                url=o.get("url", "")
+            )
+            for o in org_nodes
+        ]
+
         return GitHubUserData(
             username=user_dict.get("login", self.config.github_username),
             name=user_dict.get("name") or self.config.display_name,
@@ -515,5 +579,7 @@ class GitHubAPIClient:
             streak=streak,
             languages=languages,
             from_date=from_date,
-            to_date=to_date
+            to_date=to_date,
+            pinned_repos=pinned_repos,
+            organizations=organizations,
         )
