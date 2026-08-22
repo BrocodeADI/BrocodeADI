@@ -32,9 +32,9 @@
 </picture>
 
 ```text
-SYSTEM ID      : DEVELOPER // 0x7F
-SPECIALIZATION : DISTRIBUTED SYSTEMS • DEEP LEARNING ARCHITECTURES • COMPILERS
-ARCHITECTURE   : LINUX / X86_64 / AARCH64
+SYSTEM ID      : ADITYA CHAKRABORTY // @BROCODEADI
+SPECIALIZATION : SYSTEMS ENGINEERING • AI ARCHITECTURES • CYBERSECURITY
+LOCATION       : INDIA
 STATUS         : ACTIVE // ACCEPTING INQUIRIES & COLLABORATIONS
 ```
 
@@ -97,9 +97,8 @@ STATUS         : ACTIVE // ACCEPTING INQUIRIES & COLLABORATIONS
 ┌───────────────────────────┬────────────────────────────────────────────────┐
 │ ENDPOINT                  │ URI / TARGET                                   │
 ├───────────────────────────┼────────────────────────────────────────────────┤
-│ GitHub Profile            │ https://github.com                             │
-│ Primary Repository        │ https://github.com/octocat/github-profile      │
-│ PGP Fingerprint           │ 9F3B 4821 70DA E10F C948 2901 884B 5C2E 0102   │
+│ GitHub Profile            │ https://github.com/BrocodeADI                  │
+│ Primary Repository        │ https://github.com/BrocodeADI/BrocodeADI       │
 │ Dispatch Status           │ Nightly Cron (00:00 UTC) via GitHub Actions    │
 └───────────────────────────┴────────────────────────────────────────────────┘
 ```

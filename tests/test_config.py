@@ -8,7 +8,7 @@ from scripts.config import THEMES, Config, load_config
 
 def test_default_config():
     cfg = Config()
-    assert cfg.github_username == "octocat"
+    assert cfg.github_username == "BrocodeADI"
     assert cfg.ascii_width == 90
     assert cfg.gamma == 1.7
     assert cfg.theme_name == "dark"

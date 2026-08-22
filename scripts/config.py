@@ -133,12 +133,12 @@ THEMES: Dict[str, Theme] = {
 class Config:
     """Master configuration class."""
     # Identity
-    github_username: str = "octocat"
-    display_name: str = "Developer"
+    github_username: str = "BrocodeADI"
+    display_name: str = "Aditya Chakraborty"
     role_title: str = "Systems & AI Engineer"
-    bio: str = "Crafting high-performance systems and intelligent algorithms."
-    location: str = "San Francisco, CA"
-    website: str = "https://github.com"
+    bio: str = "Crafting high-performance systems and intelligent architectures."
+    location: str = "India"
+    website: str = "https://github.com/BrocodeADI"
     
     # Credentials & API
     github_token: str = ""
@@ -199,12 +199,12 @@ def load_config() -> Config:
     headings_dir = output_dir / "headings"
     
     return Config(
-        github_username=os.getenv("GITHUB_USERNAME", "octocat"),
-        display_name=os.getenv("DISPLAY_NAME", "Developer"),
+        github_username=os.getenv("GITHUB_USERNAME", "BrocodeADI"),
+        display_name=os.getenv("DISPLAY_NAME", "Aditya Chakraborty"),
         role_title=os.getenv("ROLE_TITLE", "Systems & AI Engineer"),
-        bio=os.getenv("BIO", "Crafting high-performance systems and intelligent algorithms."),
-        location=os.getenv("LOCATION", "San Francisco, CA"),
-        website=os.getenv("WEBSITE", "https://github.com"),
+        bio=os.getenv("BIO", "Crafting high-performance systems and intelligent architectures."),
+        location=os.getenv("LOCATION", "India"),
+        website=os.getenv("WEBSITE", "https://github.com/BrocodeADI"),
         github_token=os.getenv("GITHUB_TOKEN", ""),
         github_api_url=os.getenv("GITHUB_API_URL", "https://api.github.com/graphql"),
         portrait_path=portrait_path,
