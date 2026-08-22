@@ -164,15 +164,6 @@ def build_portrait_svg(lines: List[str], config: Config) -> str:
             f'class="a" font-size="{FONT_SIZE}">{safe}</text>'
             f'</g>'
         )
-        # Riding cursor block
-        parts.append(
-            f'<rect y="{y + 1:.1f}" width="6" height="12" class="a" opacity="0">'
-            f'<animate attributeName="x" from="{pad:.1f}" to="{pad + w:.1f}" '
-            f'begin="{begin}" dur="{ROW_DELAY:.2f}s" fill="freeze"/>'
-            f'<set attributeName="opacity" to="0.8" begin="{begin}"/>'
-            f'<set attributeName="opacity" to="0"   begin="{end}"/>'
-            f'</rect>'
-        )
 
     body = "\n".join(parts)
     return (
