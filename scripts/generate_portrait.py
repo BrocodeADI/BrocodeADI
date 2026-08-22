@@ -75,8 +75,14 @@ def prep_image(
         raise FileNotFoundError(f"Portrait image not found at: {img_path}")
 
     src = Image.open(img_path).convert("RGBA")
+    w, h = src.size
+    
+    # Apply proportional face-centered crop
     if crop:
         src = src.crop(crop)
+    elif h > 400:
+        crop_box = (int(w * 0.04), int(h * 0.06), int(w * 0.96), int(h * 0.92))
+        src = src.crop(crop_box)
 
     alpha: np.ndarray
     gray: np.ndarray
