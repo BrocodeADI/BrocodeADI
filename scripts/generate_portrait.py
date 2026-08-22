@@ -1,18 +1,11 @@
-"""High-Definition ASCII Portrait generator matching andriidrok1's clean, borderless aesthetic.
+"""ASCII portrait generator — exact port of andriidrok1/andriidrok1/scripts/make_portrait.py.
 
-Pipeline:
-1. Tight crop centered on the head and face
-2. AI background removal (rembg u2netp)
-3. Alpha compositing onto pure white
-4. Edge-preserving bilateral filter (11, 50, 50)
-5. CLAHE adaptive local contrast equalization
-6. Darkening power curve (gray / 255.0) ** 1.7 to prevent washed-out facial tones
-7. Alpha matte clamp (alpha < 20 -> 255)
-8. Monospace geometry aspect ratio correction (0.48)
-9. High-density character ramp (" .`:-=+*cs#%@")
-10. Borderless transparent SVG with GitHub light/dark adaptive text colors
-11. SMIL animated clipPath wipe with riding cursor block
-12. Embedded JetBrains Mono monospace font subset
+Produces a transparent, borderless, self-typing SVG portrait using:
+  - rembg background removal (u2netp fast model)
+  - bilateral filter + CLAHE + darkening power curve
+  - SMIL clipPath row-wipe animation with riding cursor
+  - JetBrains Mono embedded (0.600 em advance width)
+  - GitHub light/dark adaptive fill colours, no background box
 """
 
 from __future__ import annotations
@@ -26,244 +19,192 @@ import numpy as np
 from PIL import Image
 
 from .config import Config, load_config
-from .svg_utils import (
-    create_svg_document,
-    escape_xml,
-    get_font_face_css,
-)
+from .svg_utils import get_font_face_css, escape_xml, create_svg_document
 
 logger = logging.getLogger(__name__)
 
-CHAR_W = 7.74
-FONT_SIZE = 12.9
-LINE_H = 15.0
-ROW_DELAY = 0.08
-FG_LIGHT = "#6e7681"
-FG_DARK = "#c9d1d9"
+# ── Exact constants from andriidrok1 ──────────────────────────────────────────
+RAMP       = " .`:-=+*cs#%@"   # bright/sparse → dark/dense; leading space = blank
+COLS       = 90                 # below ~88 the face muddies
+CLAHE_CLIP = 3.0
+GAMMA      = 1.0                # ramp mapping exponent
+CURVE      = 1.7                # darkening curve — the difference-maker
+ROW_RATIO  = 0.48               # monospace cells are ~2× as tall as wide
 
+FG_LIGHT   = "#6e7681"          # GitHub light grey
+FG_DARK    = "#c9d1d9"          # GitHub dark off-white
+CHAR_W     = 7.74               # 0.600 em at FONT_SIZE
+FONT_SIZE  = 12.9
+LINE_H     = 15
+ROW_DELAY  = 0.09               # per-row stagger, seconds
+FAMILY     = "JBMono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace"
+
+
+# ── Background removal ────────────────────────────────────────────────────────
 
 def remove_background_fallback(img_bgr: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """GrabCut fallback for background separation if rembg is unavailable."""
+    """GrabCut fallback when rembg is unavailable."""
     h, w = img_bgr.shape[:2]
     if h < 20 or w < 20:
         gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
         return gray, np.full((h, w), 255, dtype=np.uint8)
-
     try:
         cv2.setRNGSeed(42)
         mask = np.zeros((h, w), np.uint8)
-        bgd_model = np.zeros((1, 65), np.float64)
-        fgd_model = np.zeros((1, 65), np.float64)
-        
-        margin_x = max(2, int(w * 0.04))
-        margin_y = max(2, int(h * 0.04))
-        rect = (margin_x, margin_y, w - 2 * margin_x, h - 2 * margin_y)
-        
-        cv2.grabCut(img_bgr, mask, rect, bgd_model, fgd_model, 3, cv2.GC_INIT_WITH_RECT)
+        bgd = np.zeros((1, 65), np.float64)
+        fgd = np.zeros((1, 65), np.float64)
+        mx, my = max(2, int(w * 0.04)), max(2, int(h * 0.04))
+        rect = (mx, my, w - 2 * mx, h - 2 * my)
+        cv2.grabCut(img_bgr, mask, rect, bgd, fgd, 3, cv2.GC_INIT_WITH_RECT)
         alpha = np.where((mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 255, 0).astype("uint8")
-        
-        white_bg = np.full((h, w, 3), 255, dtype=np.uint8)
-        norm_alpha = (alpha / 255.0)[:, :, np.newaxis]
-        composite_bgr = (img_bgr * norm_alpha + white_bg * (1.0 - norm_alpha)).astype(np.uint8)
-        gray = cv2.cvtColor(composite_bgr, cv2.COLOR_BGR2GRAY)
-        return gray, alpha
+        white = np.full((h, w, 3), 255, dtype=np.uint8)
+        na = (alpha / 255.0)[:, :, np.newaxis]
+        comp = (img_bgr * na + white * (1.0 - na)).astype(np.uint8)
+        return cv2.cvtColor(comp, cv2.COLOR_BGR2GRAY), alpha
     except Exception as e:
-        logger.warning(f"GrabCut fallback failed ({e}), using direct grayscale.")
-        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-        return gray, np.full((h, w), 255, dtype=np.uint8)
+        logger.warning(f"GrabCut failed ({e}), using raw grayscale.")
+        return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY), np.full((h, w), 255, dtype=np.uint8)
 
 
-def prep_image(
-    img_path: Path,
-    crop: Optional[Tuple[int, int, int, int]] = None,
-    curve: float = 1.7,
-    clahe_clip: float = 3.0
-) -> Image.Image:
-    """Cut out background, enhance local contrast, and apply darkening curve."""
-    if not img_path.exists():
-        raise FileNotFoundError(f"Portrait image not found at: {img_path}")
+# ── Image preparation — exact andriidrok1 pipeline ────────────────────────────
 
+def prep_image(img_path: Path, crop: Optional[Tuple[int,int,int,int]] = None) -> Image.Image:
+    """Cut out background, equalize contrast, apply darkening curve."""
     src = Image.open(img_path).convert("RGBA")
-    w, h = src.size
-
-    # Apply tight face crop
     if crop:
         src = src.crop(crop)
-    elif h > 400:
-        crop_box = (int(w * 0.15), int(h * 0.08), int(w * 0.85), int(h * 0.80))
-        src = src.crop(crop_box)
-
-    alpha: np.ndarray
-    gray: np.ndarray
 
     try:
-        from rembg import new_session, remove
+        from rembg import remove, new_session
         session = new_session("u2netp")
-        cut = remove(src, session=session)
+        cut   = remove(src, session=session)
         alpha = np.array(cut.split()[-1])
         white = Image.new("RGBA", cut.size, (255, 255, 255, 255))
-        gray = np.array(Image.alpha_composite(white, cut).convert("L"))
-    except (ImportError, Exception) as e:
-        logger.info(f"rembg u2netp unavailable ({e}); applying GrabCut background separation.")
-        src_rgb = src.convert("RGB")
-        img_bgr = cv2.cvtColor(np.array(src_rgb), cv2.COLOR_RGB2BGR)
+        gray  = np.array(Image.alpha_composite(white, cut).convert("L"))
+    except Exception as e:
+        logger.info(f"rembg unavailable ({e}), falling back to GrabCut.")
+        img_bgr = cv2.cvtColor(np.array(src.convert("RGB")), cv2.COLOR_RGB2BGR)
         gray, alpha = remove_background_fallback(img_bgr)
 
-    # 1. Bilateral filter: smooth skin, keep sharp facial edges
-    gray = cv2.bilateralFilter(gray, 11, 50, 50)
-
-    # 2. CLAHE local adaptive contrast
-    clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(8, 8))
-    gray = clahe.apply(gray)
-
-    # 3. Darkening curve to preserve facial features, eyebrows, eyes, and lips
-    gray = (255.0 * ((gray / 255.0) ** curve)).astype("uint8")
-
-    # 4. Force background to pure white (blank ASCII)
-    gray[alpha < 20] = 255
+    gray  = cv2.bilateralFilter(gray, 11, 50, 50)
+    clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP, tileGridSize=(8, 8))
+    gray  = clahe.apply(gray)
+    gray  = (255.0 * (gray / 255.0) ** CURVE).astype("uint8")
+    gray[alpha < 20] = 255          # hard-matte the background → blank space
 
     return Image.fromarray(gray)
 
 
-def image_to_ascii_lines(
-    img: Image.Image,
-    cols: int = 90,
-    gamma: float = 1.0,
-    ramp: str = " .`:-=+*cs#%@",
-    row_ratio: float = 0.48
-) -> List[str]:
-    """Convert prepped image to ASCII lines."""
-    w, h = img.size
-    rows = max(10, int(cols * (h / w) * row_ratio))
-    resized = img.resize((cols, rows), Image.Resampling.LANCZOS)
-    px = list(resized.getdata())
-    n = len(ramp)
+# ── ASCII conversion ──────────────────────────────────────────────────────────
 
+def image_to_ascii_lines(img: Image.Image, cols: int = COLS) -> List[str]:
+    """Ramp-map the prepped image to ASCII character rows."""
+    w, h = img.size
+    rows    = max(10, int(cols * (h / w) * ROW_RATIO))
+    resized = img.resize((cols, rows), Image.Resampling.LANCZOS)
+    px      = list(resized.getdata())
+    n       = len(RAMP)
     lines: List[str] = []
     for r in range(rows):
-        row_chars = []
+        row = []
         for c in range(cols):
-            val = px[r * cols + c]
+            val  = px[r * cols + c]
             norm = max(0.0, min(1.0, 1.0 - val / 255.0))
-            idx = min(n - 1, int((norm ** gamma) * n))
-            row_chars.append(ramp[idx])
-        lines.append("".join(row_chars).rstrip())
+            idx  = min(n - 1, int((norm ** GAMMA) * n))
+            row.append(RAMP[idx])
+        lines.append("".join(row).rstrip())
 
-    # Strip empty leading/trailing blank rows
-    while lines and not lines[0].strip():
-        lines.pop(0)
-    while lines and not lines[-1].strip():
-        lines.pop()
-
+    while lines and not lines[0].strip():  lines.pop(0)
+    while lines and not lines[-1].strip(): lines.pop()
     return lines
 
 
-def build_animated_portrait_svg(
-    lines: List[str],
-    config: Config,
-    cols: int = 90
-) -> str:
-    """Build borderless, transparent SMIL animated SVG matching andriidrok1."""
-    pad = 14.0
-    
-    max_line_len = max(len(l) for l in lines) if lines else cols
-    render_cols = max(cols, max_line_len)
-    width = int(render_cols * CHAR_W + pad * 2)
+# ── SVG assembly — exact andriidrok1 structure ────────────────────────────────
+
+def build_portrait_svg(lines: List[str], config: Config) -> str:
+    """Borderless transparent SVG with SMIL animated row wipes and cursor."""
+    pad    = 14.0
+    n_cols = max(COLS, max(len(l) for l in lines) if lines else COLS)
+    width  = int(n_cols * CHAR_W + pad * 2)
     height = int(len(lines) * LINE_H + pad * 2)
 
-    svg_parts: List[str] = []
+    all_chars = "".join(set(RAMP + " ".join(lines)))
+    font_css  = get_font_face_css(config.font_path, all_chars, "JBMono")
 
-    # Adaptive theme styling (light & dark mode compliant without background boxes)
-    theme_style = f"""
+    style = f"""
+    {font_css}
     .a {{ fill: {FG_LIGHT}; }}
     @media (prefers-color-scheme: dark) {{
         .a {{ fill: {FG_DARK}; }}
     }}
     """
 
+    parts: List[str] = []
     for i, line in enumerate(lines):
-        y = pad + i * LINE_H
+        y     = pad + i * LINE_H
         begin = f"{i * ROW_DELAY:.2f}s"
-        end = f"{(i + 1) * ROW_DELAY:.2f}s"
-        w = max(len(line), 1) * CHAR_W
-        safe_text = escape_xml(line)
+        end   = f"{(i + 1) * ROW_DELAY:.2f}s"
+        w     = max(len(line), 1) * CHAR_W
+        cid   = f"c{i}"
+        safe  = escape_xml(line)
 
-        clip_id = f"c{i}"
-        
-        # Row clipPath wipe
-        svg_parts.append(
-            f'<clipPath id="{clip_id}">'
+        # clipPath that wipes the row left → right
+        parts.append(
+            f'<clipPath id="{cid}">'
             f'<rect x="{pad:.1f}" y="{y:.1f}" height="{LINE_H:.1f}" width="0">'
-            f'<animate attributeName="width" from="0" to="{w:.1f}" begin="{begin}" dur="{ROW_DELAY:.2f}s" fill="freeze" />'
+            f'<animate attributeName="width" from="0" to="{w:.1f}" '
+            f'begin="{begin}" dur="{ROW_DELAY:.2f}s" fill="freeze"/>'
             f'</rect>'
             f'</clipPath>'
         )
-
-        # Row Text Content
-        svg_parts.append(
-            f'<g clip-path="url(#{clip_id})">'
+        # Text revealed by the clip
+        parts.append(
+            f'<g clip-path="url(#{cid})">'
             f'<text xml:space="preserve" x="{pad:.1f}" y="{y + 11.2:.1f}" '
-            f'class="a" font-size="{FONT_SIZE:.1f}">{safe_text}</text>'
+            f'class="a" font-size="{FONT_SIZE}">{safe}</text>'
             f'</g>'
         )
-
-        # Riding Terminal Cursor Block
-        svg_parts.append(
+        # Riding cursor block
+        parts.append(
             f'<rect y="{y + 1:.1f}" width="6" height="12" class="a" opacity="0">'
-            f'<animate attributeName="x" from="{pad:.1f}" to="{pad + w:.1f}" begin="{begin}" dur="{ROW_DELAY:.2f}s" fill="freeze" />'
-            f'<set attributeName="opacity" to="0.8" begin="{begin}" />'
-            f'<set attributeName="opacity" to="0" begin="{end}" />'
+            f'<animate attributeName="x" from="{pad:.1f}" to="{pad + w:.1f}" '
+            f'begin="{begin}" dur="{ROW_DELAY:.2f}s" fill="freeze"/>'
+            f'<set attributeName="opacity" to="0.8" begin="{begin}"/>'
+            f'<set attributeName="opacity" to="0"   begin="{end}"/>'
             f'</rect>'
         )
 
-    body_svg = "\n    ".join(svg_parts)
-
-    all_chars = "".join(set(config.ascii_ramp + " ".join(lines) + "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.:_-"))
-    font_css = get_font_face_css(config.font_path, all_chars, config.font_family) + theme_style
-
-    return create_svg_document(
-        width=width,
-        height=height,
-        content=body_svg,
-        font_css=font_css
+    body = "\n".join(parts)
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" fill="none" '
+        f'font-family="{FAMILY}">'
+        f'<style>{style}</style>'
+        f'{body}'
+        f'</svg>'
     )
 
+
+# ── Main entry point ──────────────────────────────────────────────────────────
 
 def generate_portrait_svg(
     config: Optional[Config] = None,
-    output_path: Optional[Path] = None
+    output_path: Optional[Path] = None,
+    crop: Optional[Tuple[int,int,int,int]] = None,
 ) -> str:
-    """Master generation function for high-definition ASCII portrait."""
-    cfg = config or load_config()
-    
-    prepped = prep_image(
-        img_path=cfg.portrait_path,
-        curve=1.7,
-        clahe_clip=3.0
-    )
+    cfg     = config or load_config()
+    prepped = prep_image(cfg.portrait_path, crop=crop)
+    lines   = image_to_ascii_lines(prepped, cols=COLS)
+    svg     = build_portrait_svg(lines, cfg)
 
-    lines = image_to_ascii_lines(
-        img=prepped,
-        cols=cfg.ascii_width,
-        gamma=1.0,
-        ramp=cfg.ascii_ramp,
-        row_ratio=0.48
-    )
+    target  = output_path or (cfg.output_dir / "portrait.svg")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.exists() or target.read_text(encoding="utf-8") != svg:
+        target.write_text(svg, encoding="utf-8")
+        logger.info(f"Generated portrait SVG → {target}")
 
-    svg_doc = build_animated_portrait_svg(
-        lines=lines,
-        config=cfg,
-        cols=cfg.ascii_width
-    )
-
-    target_file = output_path or (cfg.output_dir / "portrait.svg")
-    target_file.parent.mkdir(parents=True, exist_ok=True)
-
-    if not target_file.exists() or target_file.read_text(encoding="utf-8") != svg_doc:
-        target_file.write_text(svg_doc, encoding="utf-8")
-        logger.info(f"Generated high-definition portrait SVG: {target_file}")
-
-    return svg_doc
+    return svg
 
 
 if __name__ == "__main__":

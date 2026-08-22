@@ -1,22 +1,45 @@
-"""Generate GitHub Contribution Statistics SVG Card."""
+"""Generate a single clean stats.svg matching andriidrok1's aesthetic exactly.
+
+His stats.svg is a single-card, borderless, monospace SVG with:
+- Light mode: muted grey text (#6e7681)
+- Dark mode: off-white (#c9d1d9)
+- No terminal boxes, no accent colour borders
+- Clean labelled rows of data
+- JetBrains Mono embedded subset
+"""
 
 from __future__ import annotations
 
+import base64
 import logging
 from pathlib import Path
 from typing import Optional
 
 from .config import Config, load_config
 from .github_api import GitHubAPIClient, GitHubUserData
-from .svg_utils import (
-    create_svg_document,
-    escape_xml,
-    get_font_face_css,
-    render_stat_box,
-    render_terminal_card,
-)
+from .svg_utils import get_font_face_css, escape_xml
 
 logger = logging.getLogger(__name__)
+
+FG_LIGHT = "#6e7681"
+FG_DARK = "#c9d1d9"
+DIM_LIGHT = "#8b949e"
+DIM_DARK = "#8b949e"
+FAMILY = "JBMono,ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace"
+FONT_SIZE = 13
+LINE_H = 22
+PAD_X = 28
+PAD_Y = 26
+
+
+def _row(y: float, label: str, value: str) -> str:
+    """Render a single label: value row."""
+    return (
+        f'<text x="{PAD_X}" y="{y:.0f}" class="dim" font-size="{FONT_SIZE}">'
+        f'{escape_xml(label)}</text>'
+        f'<text x="330" y="{y:.0f}" class="fg" font-size="{FONT_SIZE}" font-weight="600">'
+        f'{escape_xml(value)}</text>'
+    )
 
 
 def generate_stats_svg(
@@ -24,103 +47,61 @@ def generate_stats_svg(
     config: Optional[Config] = None,
     output_path: Optional[Path] = None
 ) -> str:
-    """Generate terminal-style statistics SVG card."""
+    """Generate a clean, minimal stats card matching andriidrok1."""
     cfg = config or load_config()
-    theme = cfg.theme
 
-    width = 460
-    height = 240
-
-    # 4 metric boxes in a 2x2 grid
-    box_w = 200.0
-    box_h = 76.0
-    left_x = 20.0
-    right_x = 240.0
-    top_y = 16.0
-    bot_y = 104.0
-
-    stat_boxes = [
-        render_stat_box(
-            x=left_x,
-            y=top_y,
-            width=box_w,
-            height=box_h,
-            label="TOTAL CONTRIBUTIONS",
-            value=f"{user_data.total_contributions:,}",
-            theme=theme,
-            subtext=f"Past {cfg.contribution_days} UTC Days",
-            accent_color=theme.accent
-        ),
-        render_stat_box(
-            x=right_x,
-            y=top_y,
-            width=box_w,
-            height=box_h,
-            label="TOTAL COMMITS",
-            value=f"{user_data.total_commits:,}",
-            theme=theme,
-            subtext="Authored Commits",
-            accent_color=theme.accent_secondary
-        ),
-        render_stat_box(
-            x=left_x,
-            y=bot_y,
-            width=box_w,
-            height=box_h,
-            label="PULL REQUESTS & ISSUES",
-            value=f"{user_data.total_prs + user_data.total_issues:,}",
-            theme=theme,
-            subtext=f"{user_data.total_prs:,} PRs • {user_data.total_issues:,} Issues",
-            accent_color="#d29922"
-        ),
-        render_stat_box(
-            x=right_x,
-            y=bot_y,
-            width=box_w,
-            height=box_h,
-            label="STARS & FORKS",
-            value=f"{user_data.total_stars:,} ★",
-            theme=theme,
-            subtext=f"{user_data.total_forks:,} Forks • {user_data.public_repos_count} Public Repos",
-            accent_color="#bc8cff"
-        ),
+    rows = [
+        ("contributions (last year)", f"{user_data.total_contributions:,}"),
+        ("commits authored",          f"{user_data.total_commits:,}"),
+        ("pull requests",             f"{user_data.total_prs:,}"),
+        ("issues opened",             f"{user_data.total_issues:,}"),
+        ("stars earned",              f"{user_data.total_stars:,}"),
+        ("public repos",              f"{user_data.public_repos_count:,}"),
     ]
 
-    body_content = "\n".join(stat_boxes)
-    title = f"METRICS // @{user_data.username.upper()}"
-    status = "TELEMETRY"
+    width = 620
+    height = PAD_Y * 2 + len(rows) * LINE_H + 4
 
-    card_content = render_terminal_card(
-        width=width,
-        height=height,
-        title=title,
-        theme=theme,
-        body_content=body_content,
-        status_tag=status
-    )
+    row_svgs = []
+    for i, (label, value) in enumerate(rows):
+        y = PAD_Y + i * LINE_H + FONT_SIZE
+        row_svgs.append(_row(y, label, value))
+
+    body = "\n".join(row_svgs)
 
     all_chars = "".join(set(
-        title + status + "ONLINE" +
-        "TOTAL CONTRIBUTIONS COMMITS PULL REQUESTS ISSUES STARS FORKS" +
-        f"{user_data.total_contributions:,}{user_data.total_commits:,}{user_data.total_prs:,}{user_data.total_issues:,}{user_data.total_stars:,}{user_data.total_forks:,}{user_data.public_repos_count}" +
-        "★•/:., 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+        "contributions last year commits authored pull requests issues opened stars earned public repos"
+        "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ(),:. "
+        + "".join(v for _, v in rows)
     ))
-    font_css = get_font_face_css(cfg.font_path, all_chars, cfg.font_family)
+    font_css = get_font_face_css(cfg.font_path, all_chars, "JBMono")
 
-    svg_doc = create_svg_document(
-        width=width,
-        height=height,
-        content=card_content,
-        font_css=font_css
+    style = f"""
+    {font_css}
+    .fg  {{ fill: {FG_LIGHT}; }}
+    .dim {{ fill: {DIM_LIGHT}; }}
+    @media (prefers-color-scheme: dark) {{
+        .fg  {{ fill: {FG_DARK}; }}
+        .dim {{ fill: {DIM_DARK}; }}
+    }}
+    """
+
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" fill="none" '
+        f'font-family="{FAMILY}">'
+        f'<style>{style}</style>'
+        f'{body}'
+        f'</svg>'
     )
 
     target_file = output_path or (cfg.output_dir / "stats.svg")
     target_file.parent.mkdir(parents=True, exist_ok=True)
-    if not target_file.exists() or target_file.read_text(encoding="utf-8") != svg_doc:
-        target_file.write_text(svg_doc, encoding="utf-8")
+    if not target_file.exists() or target_file.read_text(encoding="utf-8") != svg:
+        target_file.write_text(svg, encoding="utf-8")
         logger.info(f"Generated stats SVG: {target_file}")
 
-    return svg_doc
+    return svg
 
 
 if __name__ == "__main__":
