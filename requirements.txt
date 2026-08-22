@@ -5,11 +5,12 @@ opencv-python>=4.8.0
 fonttools>=4.40.0
 brotli>=1.0.9
 
+# AI Background Cutout Engine
+rembg>=2.0.80
+onnxruntime>=1.18.0
+
 # API & Networking
 requests>=2.31.0
-
-# Optional Enhanced AI Background Removal (fallback provided if not installed)
-# rembg>=2.0.50
 
 # Testing & Quality
 pytest>=7.4.0

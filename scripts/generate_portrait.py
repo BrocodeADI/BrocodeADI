@@ -1,4 +1,17 @@
-"""ASCII Portrait generator with OpenCV computer vision pipeline and animated SVG rendering."""
+"""High-Definition ASCII Portrait generator matching the visual standard of andriidrok1.
+
+Pipeline:
+1. Subject isolation using rembg (u2netp model)
+2. Alpha compositing onto pure white
+3. Edge-preserving bilateral filter (11, 50, 50)
+4. CLAHE adaptive local contrast equalization
+5. Darkening power curve (gray / 255.0) ** 1.7
+6. Alpha matte clamp (alpha < 20 -> 255)
+7. Monospace geometry aspect ratio correction (0.48)
+8. High-density character ramp quantization (" .`:-=+*cs#%@")
+9. SMIL animated clipPath wipe with riding cursor block
+10. Embedded JetBrains Mono typography
+"""
 
 from __future__ import annotations
 
@@ -15,22 +28,17 @@ from .svg_utils import (
     create_svg_document,
     escape_xml,
     get_font_face_css,
-    render_terminal_card,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def remove_background_fallback(img_bgr: np.ndarray) -> np.ndarray:
-    """
-    Intelligent background separation fallback when rembg is not available.
-    Uses GrabCut algorithm with an outer boundary background assumption.
-    Ensures deterministic output using fixed RNG seed.
-    """
+def remove_background_fallback(img_bgr: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """GrabCut fallback for background separation if rembg is unavailable."""
     h, w = img_bgr.shape[:2]
-    # If image is very small or simple, return original
     if h < 20 or w < 20:
-        return img_bgr
+        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        return gray, np.full((h, w), 255, dtype=np.uint8)
 
     try:
         cv2.setRNGSeed(42)
@@ -38,200 +46,213 @@ def remove_background_fallback(img_bgr: np.ndarray) -> np.ndarray:
         bgd_model = np.zeros((1, 65), np.float64)
         fgd_model = np.zeros((1, 65), np.float64)
         
-        # Assume margin of 5% around edges as probable background
-        margin_x = max(2, int(w * 0.05))
-        margin_y = max(2, int(h * 0.05))
+        margin_x = max(2, int(w * 0.04))
+        margin_y = max(2, int(h * 0.04))
         rect = (margin_x, margin_y, w - 2 * margin_x, h - 2 * margin_y)
         
         cv2.grabCut(img_bgr, mask, rect, bgd_model, fgd_model, 3, cv2.GC_INIT_WITH_RECT)
-        mask2 = np.where((mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 255, 0).astype("uint8")
+        alpha = np.where((mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 255, 0).astype("uint8")
         
-        # Composite foreground over white background
         white_bg = np.full((h, w, 3), 255, dtype=np.uint8)
-        alpha = (mask2 / 255.0)[:, :, np.newaxis]
-        result = (img_bgr * alpha + white_bg * (1.0 - alpha)).astype(np.uint8)
-        return result
+        norm_alpha = (alpha / 255.0)[:, :, np.newaxis]
+        composite_bgr = (img_bgr * norm_alpha + white_bg * (1.0 - norm_alpha)).astype(np.uint8)
+        gray = cv2.cvtColor(composite_bgr, cv2.COLOR_BGR2GRAY)
+        return gray, alpha
     except Exception as e:
-        logger.warning(f"GrabCut fallback failed ({e}), using direct image.")
-        return img_bgr
+        logger.warning(f"GrabCut fallback failed ({e}), using direct grayscale.")
+        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        return gray, np.full((h, w), 255, dtype=np.uint8)
 
 
-def isolate_subject(img_path: Path, enable_grabcut: bool = False) -> np.ndarray:
-    """
-    Load image and apply background processing.
-    For standard high-quality studio/portrait photos, direct loading with CLAHE/Bilateral filtering
-    preserves full facial tones, hair, smile, and lighting.
-    """
+def prep_image(
+    img_path: Path,
+    crop: Optional[Tuple[int, int, int, int]] = None,
+    curve: float = 1.7,
+    clahe_clip: float = 3.0
+) -> Image.Image:
+    """Cut out background, enhance local contrast, and apply darkening curve."""
     if not img_path.exists():
         raise FileNotFoundError(f"Portrait image not found at: {img_path}")
 
-    # Try rembg if installed
+    src = Image.open(img_path).convert("RGBA")
+    if crop:
+        src = src.crop(crop)
+
+    alpha: np.ndarray
+    gray: np.ndarray
+
     try:
-        import rembg
-        pil_img = Image.open(img_path)
-        nobg = rembg.remove(pil_img)
-        white_bg = Image.new("RGBA", nobg.size, (255, 255, 255, 255))
-        composite = Image.alpha_composite(white_bg, nobg).convert("RGB")
-        return cv2.cvtColor(np.array(composite), cv2.COLOR_RGB2BGR)
-    except (ImportError, Exception):
-        img_bgr = cv2.imread(str(img_path))
-        if img_bgr is None:
-            raise ValueError(f"OpenCV could not decode image at {img_path}")
-        if enable_grabcut:
-            return remove_background_fallback(img_bgr)
-        return img_bgr
+        from rembg import new_session, remove
+        session = new_session("u2netp")
+        cut = remove(src, session=session)
+        alpha = np.array(cut.split()[-1])
+        white = Image.new("RGBA", cut.size, (255, 255, 255, 255))
+        gray = np.array(Image.alpha_composite(white, cut).convert("L"))
+    except (ImportError, Exception) as e:
+        logger.info(f"rembg u2netp unavailable ({e}); applying GrabCut background separation.")
+        src_rgb = src.convert("RGB")
+        img_bgr = cv2.cvtColor(np.array(src_rgb), cv2.COLOR_RGB2BGR)
+        gray, alpha = remove_background_fallback(img_bgr)
+
+    # 1. Bilateral filter: smooth skin, keep sharp facial edges
+    gray = cv2.bilateralFilter(gray, 11, 50, 50)
+
+    # 2. CLAHE local adaptive contrast
+    clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
+
+    # 3. Darkening curve to preserve facial features, eyebrows, eyes, and lips
+    gray = (255.0 * ((gray / 255.0) ** curve)).astype("uint8")
+
+    # 4. Force background to pure white (blank ASCII)
+    gray[alpha < 20] = 255
+
+    return Image.fromarray(gray)
 
 
-def image_to_ascii(
-    img_bgr: np.ndarray,
-    config: Config,
-    invert: bool = False
-) -> Tuple[List[str], int, int]:
-    """
-    Convert image to ASCII character matrix through an enhanced CV pipeline:
-    1. Grayscale conversion
-    2. Bilateral filtering (edge-preserving smoothing for skin/noise)
-    3. CLAHE (adaptive contrast equalization for eyes, teeth, facial geometry)
-    4. Non-linear gamma calibration
-    5. Aspect ratio correction & area resampling
-    6. ASCII character ramp quantization
-    """
-    # 1. Convert to grayscale
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+def image_to_ascii_lines(
+    img: Image.Image,
+    cols: int = 90,
+    gamma: float = 1.0,
+    ramp: str = " .`:-=+*cs#%@",
+    row_ratio: float = 0.48
+) -> List[str]:
+    """Convert prepped image to ASCII lines."""
+    w, h = img.size
+    rows = max(10, int(cols * (h / w) * row_ratio))
+    resized = img.resize((cols, rows), Image.Resampling.LANCZOS)
+    px = list(resized.getdata())
+    n = len(ramp)
 
-    # 2. Bilateral filtering (preserves edges of eyes, jawline, beard, hair)
-    filtered = cv2.bilateralFilter(
-        gray,
-        d=config.bilateral_d,
-        sigmaColor=config.bilateral_sigma_color,
-        sigmaSpace=config.bilateral_sigma_space
-    )
-
-    # 3. CLAHE local adaptive contrast enhancement
-    clahe = cv2.createCLAHE(
-        clipLimit=config.contrast_clip_limit,
-        tileGridSize=config.contrast_tile_grid
-    )
-    enhanced = clahe.apply(filtered)
-
-    if invert:
-        enhanced = 255 - enhanced
-
-    # 4. Nonlinear gamma brightness transformation
-    norm = np.clip(enhanced / 255.0, 0.0, 1.0)
-    gamma_corrected = (norm ** config.gamma) * 255.0
-    processed_img = np.clip(gamma_corrected, 0, 255).astype(np.uint8)
-
-    # 5. Aspect ratio geometry calculation
-    h, w = img_bgr.shape[:2]
-    ascii_width = config.ascii_width
-    ascii_height = max(10, int((h / w) * ascii_width * config.aspect_ratio))
-
-    # Resample to ASCII grid with area interpolation to prevent aliasing
-    resized = cv2.resize(
-        processed_img,
-        (ascii_width, ascii_height),
-        interpolation=cv2.INTER_AREA
-    )
-
-    # 6. Map brightness values to ASCII ramp characters
-    ramp = config.ascii_ramp
-    ramp_len = len(ramp)
-    
-    ascii_rows: List[str] = []
-    for r in range(ascii_height):
+    lines: List[str] = []
+    for r in range(rows):
         row_chars = []
-        for c in range(ascii_width):
-            val = resized[r, c]
-            idx = int((val / 256.0) * ramp_len)
-            idx = min(ramp_len - 1, max(0, idx))
+        for c in range(cols):
+            val = px[r * cols + c]
+            norm = max(0.0, min(1.0, 1.0 - val / 255.0))
+            idx = min(n - 1, int((norm ** gamma) * n))
             row_chars.append(ramp[idx])
-        ascii_rows.append("".join(row_chars))
+        lines.append("".join(row_chars).rstrip())
 
-    return ascii_rows, ascii_width, ascii_height
+    # Strip empty leading/trailing blank rows
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+
+    return lines
+
+
+def build_animated_portrait_svg(
+    lines: List[str],
+    config: Config,
+    cols: int = 90,
+    char_w: float = 7.74,
+    font_size: float = 12.9,
+    line_h: float = 15.0,
+    row_delay: float = 0.08
+) -> str:
+    """Build SMIL animated SVG with clipPath wipe and cursor blocks."""
+    pad = 16.0
+    theme = config.theme
+    
+    max_line_len = max(len(l) for l in lines) if lines else cols
+    render_cols = max(cols, max_line_len)
+    width = int(render_cols * char_w + pad * 2)
+    height = int(len(lines) * line_h + pad * 2)
+
+    svg_parts: List[str] = []
+
+    # Card background & border
+    svg_parts.append(
+        f'<rect x="0.5" y="0.5" width="{width - 1}" height="{height - 1}" rx="8" '
+        f'fill="{theme.card_bg}" stroke="{theme.border}" stroke-width="1" />'
+    )
+
+    # Text Rows & Animated Wipes
+    for i, line in enumerate(lines):
+        y = pad + i * line_h
+        begin = f"{i * row_delay:.3f}s"
+        end = f"{(i + 1) * row_delay:.3f}s"
+        w = max(len(line), 1) * char_w
+        safe_text = escape_xml(line)
+
+        clip_id = f"cp_{i}"
+        
+        # Row clipPath wipe
+        svg_parts.append(
+            f'<clipPath id="{clip_id}">'
+            f'<rect x="{pad:.1f}" y="{y:.1f}" height="{line_h:.1f}" width="0">'
+            f'<animate attributeName="width" from="0" to="{w:.1f}" begin="{begin}" dur="{row_delay:.3f}s" fill="freeze" />'
+            f'</rect>'
+            f'</clipPath>'
+        )
+
+        # Row Text Content
+        svg_parts.append(
+            f'<g clip-path="url(#{clip_id})">'
+            f'<text xml:space="preserve" x="{pad:.1f}" y="{y + 11.2:.1f}" '
+            f'fill="{theme.accent}" font-size="{font_size:.1f}">{safe_text}</text>'
+            f'</g>'
+        )
+
+        # Riding Terminal Cursor Block
+        svg_parts.append(
+            f'<rect y="{y + 1:.1f}" width="6" height="12" fill="{theme.accent}" opacity="0">'
+            f'<animate attributeName="x" from="{pad:.1f}" to="{pad + w:.1f}" begin="{begin}" dur="{row_delay:.3f}s" fill="freeze" />'
+            f'<set attributeName="opacity" to="0.8" begin="{begin}" />'
+            f'<set attributeName="opacity" to="0" begin="{end}" />'
+            f'</rect>'
+        )
+
+    body_svg = "\n    ".join(svg_parts)
+
+    all_chars = "".join(set(config.ascii_ramp + " ".join(lines) + "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.:_-"))
+    font_css = get_font_face_css(config.font_path, all_chars, config.font_family)
+
+    return create_svg_document(
+        width=width,
+        height=height,
+        content=body_svg,
+        font_css=font_css
+    )
 
 
 def generate_portrait_svg(
     config: Optional[Config] = None,
     output_path: Optional[Path] = None
 ) -> str:
-    """Generate animated SVG portrait from configured image asset."""
+    """Master generation function for high-definition ASCII portrait."""
     cfg = config or load_config()
-    theme = cfg.theme
     
-    # 1. Process image to ASCII lines
-    img_bgr = isolate_subject(cfg.portrait_path)
-    # Dark themes benefit from inverting so subject silhouette pops against dark background
-    invert_for_theme = (theme.name != "light")
-    ascii_lines, cols, rows = image_to_ascii(img_bgr, cfg, invert=invert_for_theme)
-
-    # 2. Dimensions and layout metrics
-    char_width = cfg.font_size * 0.60
-    line_height = cfg.line_height
-    padding_x = 24.0
-    padding_y = 20.0
-    header_height = 36.0
-
-    content_width = int(cols * char_width + 2 * padding_x)
-    content_height = int(rows * line_height + 2 * padding_y + header_height)
-
-    # 3. Build animated SMIL text rows
-    svg_text_rows: List[str] = []
-    for i, line in enumerate(ascii_lines):
-        y_pos = padding_y + (i + 1) * line_height - 2
-        line_esc = escape_xml(line)
-        
-        if cfg.enable_animation:
-            # Sequential top-to-bottom reveal animation
-            delay = i * cfg.row_delay
-            anim_tag = (
-                f'<animate attributeName="opacity" from="0" to="1" '
-                f'dur="0.12s" begin="{delay:.3f}s" fill="freeze" />'
-            )
-            svg_text_rows.append(
-                f'<text x="{padding_x:.1f}" y="{y_pos:.1f}" fill="{theme.accent}" '
-                f'font-size="{cfg.font_size}" xml:space="preserve" opacity="0">{anim_tag}{line_esc}</text>'
-            )
-        else:
-            svg_text_rows.append(
-                f'<text x="{padding_x:.1f}" y="{y_pos:.1f}" fill="{theme.accent}" '
-                f'font-size="{cfg.font_size}" xml:space="preserve">{line_esc}</text>'
-            )
-
-    body_content = "\n        ".join(svg_text_rows)
-
-    # Card Title with dimensions metadata
-    title = f"PORTRAIT // {cols}x{rows} MATRIX"
-    status = f"GAMMA {cfg.gamma:.1f}"
-
-    card_content = render_terminal_card(
-        width=content_width,
-        height=content_height,
-        title=title,
-        theme=theme,
-        body_content=body_content,
-        status_tag=status
+    prepped = prep_image(
+        img_path=cfg.portrait_path,
+        curve=1.7,
+        clahe_clip=3.0
     )
 
-    # Gather characters needed for font subsetting
-    all_needed_chars = "".join(set(cfg.ascii_ramp + title + status + "ONLINE" + "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/.:_ "))
-    font_css = get_font_face_css(cfg.font_path, all_needed_chars, cfg.font_family)
+    lines = image_to_ascii_lines(
+        img=prepped,
+        cols=cfg.ascii_width,
+        gamma=1.0,
+        ramp=cfg.ascii_ramp,
+        row_ratio=0.48
+    )
 
-    svg_doc = create_svg_document(
-        width=content_width,
-        height=content_height,
-        content=card_content,
-        font_css=font_css
+    svg_doc = build_animated_portrait_svg(
+        lines=lines,
+        config=cfg,
+        cols=cfg.ascii_width,
+        row_delay=cfg.row_delay
     )
 
     target_file = output_path or (cfg.output_dir / "portrait.svg")
     target_file.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Write only if changed
+
     if not target_file.exists() or target_file.read_text(encoding="utf-8") != svg_doc:
         target_file.write_text(svg_doc, encoding="utf-8")
-        logger.info(f"Generated portrait SVG: {target_file}")
-        
+        logger.info(f"Generated high-definition portrait SVG: {target_file}")
+
     return svg_doc
 
 
