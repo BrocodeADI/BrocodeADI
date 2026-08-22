@@ -1,16 +1,18 @@
-"""High-Definition ASCII Portrait generator matching the visual standard of andriidrok1.
+"""High-Definition ASCII Portrait generator matching andriidrok1's clean, borderless aesthetic.
 
 Pipeline:
-1. Subject isolation using rembg (u2netp model)
-2. Alpha compositing onto pure white
-3. Edge-preserving bilateral filter (11, 50, 50)
-4. CLAHE adaptive local contrast equalization
-5. Darkening power curve (gray / 255.0) ** 1.7
-6. Alpha matte clamp (alpha < 20 -> 255)
-7. Monospace geometry aspect ratio correction (0.48)
-8. High-density character ramp quantization (" .`:-=+*cs#%@")
-9. SMIL animated clipPath wipe with riding cursor block
-10. Embedded JetBrains Mono typography
+1. Tight crop centered on the head and face
+2. AI background removal (rembg u2netp)
+3. Alpha compositing onto pure white
+4. Edge-preserving bilateral filter (11, 50, 50)
+5. CLAHE adaptive local contrast equalization
+6. Darkening power curve (gray / 255.0) ** 1.7 to prevent washed-out facial tones
+7. Alpha matte clamp (alpha < 20 -> 255)
+8. Monospace geometry aspect ratio correction (0.48)
+9. High-density character ramp (" .`:-=+*cs#%@")
+10. Borderless transparent SVG with GitHub light/dark adaptive text colors
+11. SMIL animated clipPath wipe with riding cursor block
+12. Embedded JetBrains Mono monospace font subset
 """
 
 from __future__ import annotations
@@ -31,6 +33,13 @@ from .svg_utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+CHAR_W = 7.74
+FONT_SIZE = 12.9
+LINE_H = 15.0
+ROW_DELAY = 0.08
+FG_LIGHT = "#6e7681"
+FG_DARK = "#c9d1d9"
 
 
 def remove_background_fallback(img_bgr: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -76,12 +85,12 @@ def prep_image(
 
     src = Image.open(img_path).convert("RGBA")
     w, h = src.size
-    
-    # Apply proportional face-centered crop
+
+    # Apply tight face crop
     if crop:
         src = src.crop(crop)
     elif h > 400:
-        crop_box = (int(w * 0.04), int(h * 0.06), int(w * 0.96), int(h * 0.92))
+        crop_box = (int(w * 0.15), int(h * 0.08), int(w * 0.85), int(h * 0.80))
         src = src.crop(crop_box)
 
     alpha: np.ndarray
@@ -152,44 +161,40 @@ def image_to_ascii_lines(
 def build_animated_portrait_svg(
     lines: List[str],
     config: Config,
-    cols: int = 90,
-    char_w: float = 7.74,
-    font_size: float = 12.9,
-    line_h: float = 15.0,
-    row_delay: float = 0.08
+    cols: int = 90
 ) -> str:
-    """Build SMIL animated SVG with clipPath wipe and cursor blocks."""
-    pad = 16.0
-    theme = config.theme
+    """Build borderless, transparent SMIL animated SVG matching andriidrok1."""
+    pad = 14.0
     
     max_line_len = max(len(l) for l in lines) if lines else cols
     render_cols = max(cols, max_line_len)
-    width = int(render_cols * char_w + pad * 2)
-    height = int(len(lines) * line_h + pad * 2)
+    width = int(render_cols * CHAR_W + pad * 2)
+    height = int(len(lines) * LINE_H + pad * 2)
 
     svg_parts: List[str] = []
 
-    # Card background & border
-    svg_parts.append(
-        f'<rect x="0.5" y="0.5" width="{width - 1}" height="{height - 1}" rx="8" '
-        f'fill="{theme.card_bg}" stroke="{theme.border}" stroke-width="1" />'
-    )
+    # Adaptive theme styling (light & dark mode compliant without background boxes)
+    theme_style = f"""
+    .a {{ fill: {FG_LIGHT}; }}
+    @media (prefers-color-scheme: dark) {{
+        .a {{ fill: {FG_DARK}; }}
+    }}
+    """
 
-    # Text Rows & Animated Wipes
     for i, line in enumerate(lines):
-        y = pad + i * line_h
-        begin = f"{i * row_delay:.3f}s"
-        end = f"{(i + 1) * row_delay:.3f}s"
-        w = max(len(line), 1) * char_w
+        y = pad + i * LINE_H
+        begin = f"{i * ROW_DELAY:.2f}s"
+        end = f"{(i + 1) * ROW_DELAY:.2f}s"
+        w = max(len(line), 1) * CHAR_W
         safe_text = escape_xml(line)
 
-        clip_id = f"cp_{i}"
+        clip_id = f"c{i}"
         
         # Row clipPath wipe
         svg_parts.append(
             f'<clipPath id="{clip_id}">'
-            f'<rect x="{pad:.1f}" y="{y:.1f}" height="{line_h:.1f}" width="0">'
-            f'<animate attributeName="width" from="0" to="{w:.1f}" begin="{begin}" dur="{row_delay:.3f}s" fill="freeze" />'
+            f'<rect x="{pad:.1f}" y="{y:.1f}" height="{LINE_H:.1f}" width="0">'
+            f'<animate attributeName="width" from="0" to="{w:.1f}" begin="{begin}" dur="{ROW_DELAY:.2f}s" fill="freeze" />'
             f'</rect>'
             f'</clipPath>'
         )
@@ -198,14 +203,14 @@ def build_animated_portrait_svg(
         svg_parts.append(
             f'<g clip-path="url(#{clip_id})">'
             f'<text xml:space="preserve" x="{pad:.1f}" y="{y + 11.2:.1f}" '
-            f'fill="{theme.accent}" font-size="{font_size:.1f}">{safe_text}</text>'
+            f'class="a" font-size="{FONT_SIZE:.1f}">{safe_text}</text>'
             f'</g>'
         )
 
         # Riding Terminal Cursor Block
         svg_parts.append(
-            f'<rect y="{y + 1:.1f}" width="6" height="12" fill="{theme.accent}" opacity="0">'
-            f'<animate attributeName="x" from="{pad:.1f}" to="{pad + w:.1f}" begin="{begin}" dur="{row_delay:.3f}s" fill="freeze" />'
+            f'<rect y="{y + 1:.1f}" width="6" height="12" class="a" opacity="0">'
+            f'<animate attributeName="x" from="{pad:.1f}" to="{pad + w:.1f}" begin="{begin}" dur="{ROW_DELAY:.2f}s" fill="freeze" />'
             f'<set attributeName="opacity" to="0.8" begin="{begin}" />'
             f'<set attributeName="opacity" to="0" begin="{end}" />'
             f'</rect>'
@@ -214,7 +219,7 @@ def build_animated_portrait_svg(
     body_svg = "\n    ".join(svg_parts)
 
     all_chars = "".join(set(config.ascii_ramp + " ".join(lines) + "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.:_-"))
-    font_css = get_font_face_css(config.font_path, all_chars, config.font_family)
+    font_css = get_font_face_css(config.font_path, all_chars, config.font_family) + theme_style
 
     return create_svg_document(
         width=width,
@@ -248,8 +253,7 @@ def generate_portrait_svg(
     svg_doc = build_animated_portrait_svg(
         lines=lines,
         config=cfg,
-        cols=cfg.ascii_width,
-        row_delay=cfg.row_delay
+        cols=cfg.ascii_width
     )
 
     target_file = output_path or (cfg.output_dir / "portrait.svg")
