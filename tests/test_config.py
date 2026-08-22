@@ -10,7 +10,7 @@ def test_default_config():
     cfg = Config()
     assert cfg.github_username == "BrocodeADI"
     assert cfg.ascii_width == 90
-    assert cfg.gamma == 1.7
+    assert cfg.gamma == 1.1
     assert cfg.theme_name == "dark"
     assert cfg.theme.name == "dark"
     assert len(cfg.theme.contrib_levels) == 5

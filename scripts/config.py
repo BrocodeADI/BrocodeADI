@@ -148,8 +148,8 @@ class Config:
     portrait_path: Path = REPO_ROOT / "assets" / "portrait.jpg"
     ascii_width: int = 90
     ascii_ramp: str = " .`:-=+*cs#%@"
-    gamma: float = 1.7
-    contrast_clip_limit: float = 2.5
+    gamma: float = 1.1
+    contrast_clip_limit: float = 2.2
     contrast_tile_grid: tuple = (8, 8)
     bilateral_d: int = 9
     bilateral_sigma_color: float = 50.0
@@ -210,8 +210,8 @@ def load_config() -> Config:
         portrait_path=portrait_path,
         ascii_width=int(os.getenv("ASCII_WIDTH", "90")),
         ascii_ramp=os.getenv("ASCII_RAMP", " .`:-=+*cs#%@"),
-        gamma=float(os.getenv("GAMMA", "1.7")),
-        contrast_clip_limit=float(os.getenv("CONTRAST_CLIP_LIMIT", "2.5")),
+        gamma=float(os.getenv("GAMMA", "1.1")),
+        contrast_clip_limit=float(os.getenv("CONTRAST_CLIP_LIMIT", "2.2")),
         aspect_ratio=float(os.getenv("ASPECT_RATIO", "0.52")),
         enable_animation=os.getenv("ENABLE_ANIMATION", "true").lower() in ("true", "1", "yes"),
         row_delay=float(os.getenv("ROW_DELAY", "0.035")),

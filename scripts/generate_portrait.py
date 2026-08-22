@@ -56,9 +56,11 @@ def remove_background_fallback(img_bgr: np.ndarray) -> np.ndarray:
         return img_bgr
 
 
-def isolate_subject(img_path: Path) -> np.ndarray:
+def isolate_subject(img_path: Path, enable_grabcut: bool = False) -> np.ndarray:
     """
-    Load image and apply background removal (rembg if installed, GrabCut fallback otherwise).
+    Load image and apply background processing.
+    For standard high-quality studio/portrait photos, direct loading with CLAHE/Bilateral filtering
+    preserves full facial tones, hair, smile, and lighting.
     """
     if not img_path.exists():
         raise FileNotFoundError(f"Portrait image not found at: {img_path}")
@@ -68,36 +70,36 @@ def isolate_subject(img_path: Path) -> np.ndarray:
         import rembg
         pil_img = Image.open(img_path)
         nobg = rembg.remove(pil_img)
-        # Composite on white background
         white_bg = Image.new("RGBA", nobg.size, (255, 255, 255, 255))
         composite = Image.alpha_composite(white_bg, nobg).convert("RGB")
         return cv2.cvtColor(np.array(composite), cv2.COLOR_RGB2BGR)
-    except (ImportError, Exception) as e:
-        logger.info(f"rembg not active ({e}); applying OpenCV background isolation.")
+    except (ImportError, Exception):
         img_bgr = cv2.imread(str(img_path))
         if img_bgr is None:
             raise ValueError(f"OpenCV could not decode image at {img_path}")
-        return remove_background_fallback(img_bgr)
+        if enable_grabcut:
+            return remove_background_fallback(img_bgr)
+        return img_bgr
 
 
 def image_to_ascii(
     img_bgr: np.ndarray,
     config: Config,
-    invert: bool = True
+    invert: bool = False
 ) -> Tuple[List[str], int, int]:
     """
-    Convert image to ASCII character matrix through CV pipeline:
+    Convert image to ASCII character matrix through an enhanced CV pipeline:
     1. Grayscale conversion
-    2. Bilateral filtering (edge-preserving smoothing)
-    3. CLAHE (Contrast Limited Adaptive Histogram Equalization)
-    4. Nonlinear gamma brightness transformation
-    5. Aspect ratio correction & resampling
+    2. Bilateral filtering (edge-preserving smoothing for skin/noise)
+    3. CLAHE (adaptive contrast equalization for eyes, teeth, facial geometry)
+    4. Non-linear gamma calibration
+    5. Aspect ratio correction & area resampling
     6. ASCII character ramp quantization
     """
     # 1. Convert to grayscale
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
-    # 2. Bilateral filtering (preserves edges of eyes, jawline, glasses)
+    # 2. Bilateral filtering (preserves edges of eyes, jawline, beard, hair)
     filtered = cv2.bilateralFilter(
         gray,
         d=config.bilateral_d,
@@ -112,11 +114,10 @@ def image_to_ascii(
     )
     enhanced = clahe.apply(filtered)
 
-    # Invert if specified (for dark terminals, subject features become bright ASCII characters)
     if invert:
         enhanced = 255 - enhanced
 
-    # 4. Nonlinear gamma brightness transformation: (v / 255.0) ** gamma
+    # 4. Nonlinear gamma brightness transformation
     norm = np.clip(enhanced / 255.0, 0.0, 1.0)
     gamma_corrected = (norm ** config.gamma) * 255.0
     processed_img = np.clip(gamma_corrected, 0, 255).astype(np.uint8)
